@@ -1,0 +1,64 @@
+﻿[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegisops"
+version = "0.1.0"
+description = "Production-grade autonomous Agentic AI operations control plane."
+requires-python = ">=3.11"
+
+authors = [
+    { name = "Swapnil Mundhekar" }
+]
+
+dependencies = [
+    "openai-agents",
+    "langgraph",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    "pydantic-settings",
+    "httpx",
+    "structlog",
+    "prometheus-client"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "pre-commit"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+show_error_codes = true
+
+[tool.coverage.run]
+branch = true
+source = ["aegisops"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 80
