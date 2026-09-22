@@ -1,0 +1,101 @@
+# ============================================
+# AegisOps - Git Ignore Rules
+# ============================================
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.hypothesis/
+
+# Type checking / linting
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Node / frontend
+node_modules/
+.next/
+out/
+
+# Terraform local/state files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Local infrastructure overrides
+docker-compose.override.yml
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Local credentials / certificates
+credentials.json
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Generated reports
+reports/
+artifacts/
+
+# AegisOps local runtime state
+.aegisops/
