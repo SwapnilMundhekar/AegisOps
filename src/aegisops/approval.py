@@ -1,4 +1,4 @@
-"""Human approval management for sensitive AegisOps actions."""
+"""Policy-authoritative human approval management for AegisOps."""
 
 from __future__ import annotations
 
@@ -12,6 +12,10 @@ from aegisops.domain import (
     IncidentState,
     ProposedAction,
 )
+from aegisops.policy import (
+    PolicyDecision,
+    PolicyEffect,
+)
 
 
 def utc_now() -> datetime:
@@ -24,7 +28,7 @@ class ApprovalError(RuntimeError):
 
 
 class ApprovalManager:
-    """Manage approval and rejection decisions for sensitive actions."""
+    """Manage policy-authorized human approval decisions."""
 
     def __init__(
         self,
@@ -38,30 +42,26 @@ class ApprovalManager:
         *,
         incident: IncidentState,
         action_id: UUID,
+        policy_decision: PolicyDecision,
         approver: str,
         reason: str | None = None,
     ) -> ApprovalDecision:
-        """Approve a pending action."""
+        """Approve an action that policy explicitly requires review for."""
 
         action = self._get_action(
             incident=incident,
             action_id=action_id,
         )
 
-        self._validate_requires_approval(action)
+        self._validate_policy_decision(
+            action=action,
+            policy_decision=policy_decision,
+        )
 
-        decision = self._find_existing_decision(
+        decision = self._get_or_create_pending_decision(
             incident=incident,
             action_id=action_id,
         )
-
-        if decision is not None:
-            self._validate_pending(decision)
-        else:
-            decision = ApprovalDecision(
-                action_id=action_id,
-            )
-            incident.approvals.append(decision)
 
         decision.status = ApprovalStatus.APPROVED
         decision.approver = approver
@@ -74,6 +74,7 @@ class ApprovalManager:
             incident=incident,
             action=action,
             decision=decision,
+            policy_decision=policy_decision,
         )
 
         return decision
@@ -83,10 +84,11 @@ class ApprovalManager:
         *,
         incident: IncidentState,
         action_id: UUID,
+        policy_decision: PolicyDecision,
         approver: str,
         reason: str,
     ) -> ApprovalDecision:
-        """Reject a pending action."""
+        """Reject an action that policy explicitly requires review for."""
 
         if not reason.strip():
             raise ApprovalError(
@@ -98,20 +100,15 @@ class ApprovalManager:
             action_id=action_id,
         )
 
-        self._validate_requires_approval(action)
+        self._validate_policy_decision(
+            action=action,
+            policy_decision=policy_decision,
+        )
 
-        decision = self._find_existing_decision(
+        decision = self._get_or_create_pending_decision(
             incident=incident,
             action_id=action_id,
         )
-
-        if decision is not None:
-            self._validate_pending(decision)
-        else:
-            decision = ApprovalDecision(
-                action_id=action_id,
-            )
-            incident.approvals.append(decision)
 
         decision.status = ApprovalStatus.REJECTED
         decision.approver = approver
@@ -124,6 +121,7 @@ class ApprovalManager:
             incident=incident,
             action=action,
             decision=decision,
+            policy_decision=policy_decision,
         )
 
         return decision
@@ -134,7 +132,7 @@ class ApprovalManager:
         incident: IncidentState,
         action_id: UUID,
     ) -> bool:
-        """Return True only when the action has an explicit approval."""
+        """Return True only after an explicit human approval."""
 
         return any(
             decision.action_id == action_id
@@ -148,7 +146,7 @@ class ApprovalManager:
         incident: IncidentState,
         action_id: UUID,
     ) -> bool:
-        """Return True when the action has been explicitly rejected."""
+        """Return True after an explicit human rejection."""
 
         return any(
             decision.action_id == action_id
@@ -162,15 +160,41 @@ class ApprovalManager:
         incident: IncidentState,
         action_id: UUID,
     ) -> ProposedAction:
-        """Find an action in the authoritative incident state."""
+        """Resolve an action from authoritative incident state."""
 
         for action in incident.proposed_actions:
             if action.id == action_id:
                 return action
 
         raise ApprovalError(
-            f"Action {action_id} does not exist in incident {incident.id}."
+            f"Action {action_id} does not exist in "
+            f"incident {incident.id}."
         )
+
+    def _get_or_create_pending_decision(
+        self,
+        *,
+        incident: IncidentState,
+        action_id: UUID,
+    ) -> ApprovalDecision:
+        """Get an existing pending decision or create one."""
+
+        existing = self._find_existing_decision(
+            incident=incident,
+            action_id=action_id,
+        )
+
+        if existing is not None:
+            self._validate_pending(existing)
+            return existing
+
+        decision = ApprovalDecision(
+            action_id=action_id,
+        )
+
+        incident.approvals.append(decision)
+
+        return decision
 
     @staticmethod
     def _find_existing_decision(
@@ -178,7 +202,7 @@ class ApprovalManager:
         incident: IncidentState,
         action_id: UUID,
     ) -> ApprovalDecision | None:
-        """Return an existing decision for the action if one exists."""
+        """Return the existing approval decision when present."""
 
         for decision in incident.approvals:
             if decision.action_id == action_id:
@@ -187,26 +211,39 @@ class ApprovalManager:
         return None
 
     @staticmethod
-    def _validate_requires_approval(
-        action: ProposedAction,
-    ) -> None:
-        """Prevent approval records for actions that do not require them."""
-
-        if not action.requires_approval:
-            raise ApprovalError(
-                f"Action {action.id} does not require human approval."
-            )
-
-    @staticmethod
     def _validate_pending(
         decision: ApprovalDecision,
     ) -> None:
-        """Prevent replay or double-processing of an approval."""
+        """Prevent replay or double-processing of a decision."""
 
         if decision.status is not ApprovalStatus.PENDING:
             raise ApprovalError(
-                f"Action {decision.action_id} already has a final "
-                f"decision: {decision.status.value}."
+                f"Action {decision.action_id} already has "
+                f"a final decision: {decision.status.value}."
+            )
+
+    @staticmethod
+    def _validate_policy_decision(
+        *,
+        action: ProposedAction,
+        policy_decision: PolicyDecision,
+    ) -> None:
+        """Verify that policy actually requires approval for this action."""
+
+        if policy_decision.action_id != str(action.id):
+            raise ApprovalError(
+                "Policy decision does not belong to the "
+                f"requested action {action.id}."
+            )
+
+        if (
+            policy_decision.effect
+            is not PolicyEffect.REQUIRE_APPROVAL
+        ):
+            raise ApprovalError(
+                f"Policy does not require approval for action "
+                f"{action.id}; effect is "
+                f"{policy_decision.effect.value}."
             )
 
     def _record_decision(
@@ -215,8 +252,9 @@ class ApprovalManager:
         incident: IncidentState,
         action: ProposedAction,
         decision: ApprovalDecision,
+        policy_decision: PolicyDecision,
     ) -> None:
-        """Write the human decision to the tamper-evident ledger."""
+        """Record the decision in the tamper-evident audit ledger."""
 
         self._audit_ledger.append(
             event_type=AuditEventType.APPROVAL_RECORDED,
@@ -228,6 +266,14 @@ class ApprovalManager:
                 "tool_name": action.tool_name,
                 "decision": decision.status.value,
                 "reason": decision.reason,
+                "policy_version": (
+                    policy_decision.policy_version
+                ),
+                "policy_reasons": [
+                    reason.value
+                    for reason
+                    in policy_decision.reasons
+                ],
                 "decided_at": (
                     decision.decided_at.isoformat()
                     if decision.decided_at
