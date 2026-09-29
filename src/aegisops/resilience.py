@@ -11,7 +11,9 @@ from enum import StrEnum
 from typing import TypeVar
 
 
+
 T = TypeVar("T")
+
 
 
 class CircuitState(StrEnum):
@@ -22,8 +24,10 @@ class CircuitState(StrEnum):
     HALF_OPEN = "half_open"
 
 
+
 class CircuitOpenError(RuntimeError):
     """Raised when execution is blocked by an open circuit."""
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +204,7 @@ class CircuitBreaker:
         self._opened_at = self._clock()
 
 
+
 class ResilientExecutor:
     """Execute asynchronous operations with retry and circuit controls."""
 
@@ -290,3 +295,5 @@ class ResilientExecutor:
             self._circuit_breaker.record_success()
 
             return result
+
+#GO DUCK GO
