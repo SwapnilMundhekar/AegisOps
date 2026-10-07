@@ -21,7 +21,10 @@ dependencies = [
     "pydantic-settings",
     "httpx",
     "structlog",
-    "prometheus-client"
+    "prometheus-client",
+    "opentelemetry-api>=1.44,<2",
+    "opentelemetry-sdk>=1.44,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44,<2"
 ]
 
 [project.optional-dependencies]
