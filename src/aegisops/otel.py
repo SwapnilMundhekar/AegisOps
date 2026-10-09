@@ -449,7 +449,7 @@ class OpenTelemetryObservation:
         if parent is None:
             return None
 
-        trace_flags = (
+        trace_flags = TraceFlags(
             TraceFlags.SAMPLED
             if parent.trace.sampled
             else TraceFlags.DEFAULT
