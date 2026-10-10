@@ -144,9 +144,9 @@ def create_otel_runtime(
 class OpenTelemetryObservation:
     """Mirror an AegisOps Observation into OpenTelemetry.
 
-    The OpenTelemetry-generated trace and span identifiers become the
-    authoritative identifiers for the corresponding AegisOps
-    Observation, keeping both telemetry representations correlated.
+    OpenTelemetry-generated trace and span identifiers become the
+    authoritative distributed identifiers for the corresponding
+    AegisOps Observation.
     """
 
     def __init__(
@@ -479,10 +479,16 @@ class OpenTelemetryObservation:
     def _map_span_kind(
         kind: SpanKind,
     ) -> OTelSpanKind:
-        """Map AegisOps operation types to OpenTelemetry kinds."""
+        """Map AegisOps operations to OpenTelemetry span kinds.
+
+        GenAI tool execution is represented as INTERNAL according to
+        the OpenTelemetry GenAI semantic conventions. A future MCP or
+        HTTP client instrumentation may create its own CLIENT child
+        span for the actual network request.
+        """
 
         if kind is SpanKind.TOOL:
-            return OTelSpanKind.CLIENT
+            return OTelSpanKind.INTERNAL
 
         return OTelSpanKind.INTERNAL
 
