@@ -1,4 +1,4 @@
-"""Policy-controlled and resilient tool execution runtime for AegisOps."""
+"""Policy-controlled, resilient, and observable tool runtime for AegisOps."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 from aegisops.action_gate import (
     ActionGate,
@@ -20,6 +19,15 @@ from aegisops.audit import (
 from aegisops.domain import (
     IncidentState,
     ProposedAction,
+)
+from aegisops.observability import (
+    SpanKind,
+    SpanRecord,
+    TelemetrySink,
+)
+from aegisops.otel import (
+    OpenTelemetryObservation,
+    OpenTelemetryRuntime,
 )
 from aegisops.resilience import (
     CircuitBreaker,
@@ -55,6 +63,18 @@ class ToolExecutionError(ToolRuntimeError):
     """Raised when an underlying tool invocation fails."""
 
 
+class _NoOpTelemetrySink:
+    """Discard local span records when only OTel export is required."""
+
+    def emit(
+        self,
+        span: SpanRecord,
+    ) -> None:
+        """Discard a completed AegisOps span record."""
+
+        del span
+
+
 @dataclass(frozen=True, slots=True)
 class RegisteredTool:
     """Execution metadata for a registered tool."""
@@ -77,10 +97,31 @@ class ToolRuntime:
         action_gate: ActionGate,
         approval_manager: ApprovalManager,
         audit_ledger: AuditLedger,
+        otel_runtime: OpenTelemetryRuntime | None = None,
+        telemetry_sink: TelemetrySink | None = None,
     ) -> None:
         self._action_gate = action_gate
         self._approval_manager = approval_manager
         self._audit_ledger = audit_ledger
+
+        self._otel_runtime = otel_runtime
+
+        if (
+            telemetry_sink is not None
+            and otel_runtime is None
+        ):
+            raise ValueError(
+                "telemetry_sink requires an OpenTelemetry runtime."
+            )
+
+        self._telemetry_sink: TelemetrySink | None = None
+
+        if otel_runtime is not None:
+            self._telemetry_sink = (
+                telemetry_sink
+                if telemetry_sink is not None
+                else _NoOpTelemetrySink()
+            )
 
         self._tools: dict[str, RegisteredTool] = {}
 
@@ -97,7 +138,7 @@ class ToolRuntime:
         """Register a tool and its execution reliability contract.
 
         Tools default to non-idempotent so retries are fail-safe rather
-        than opt-out. Each registered tool receives an independent
+        than opt-out. Every registered tool receives an independent
         circuit breaker.
         """
 
@@ -218,6 +259,116 @@ class ToolRuntime:
             tool=tool,
         )
 
+        if (
+            self._otel_runtime is not None
+            and self._telemetry_sink is not None
+        ):
+            return await self._execute_observed(
+                incident=incident,
+                action=action,
+                tool=tool,
+            )
+
+        return await self._execute_registered_tool(
+            incident=incident,
+            action=action,
+            tool=tool,
+        )
+
+    async def _execute_observed(
+        self,
+        *,
+        incident: IncidentState,
+        action: ProposedAction,
+        tool: RegisteredTool,
+    ) -> object:
+        """Execute a tool inside a correlated GenAI tool span."""
+
+        assert self._otel_runtime is not None
+        assert self._telemetry_sink is not None
+
+        attributes: dict[str, object] = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": tool.name,
+            "gen_ai.agent.name": action.agent,
+            "aegisops.action.type": action.action_type.value,
+            "aegisops.risk.level": action.risk.value,
+            "aegisops.environment": incident.environment,
+            "aegisops.tool.idempotent": tool.idempotent,
+            "aegisops.tool.circuit_state.before": (
+                self.circuit_state(
+                    tool.name
+                )
+            ),
+        }
+
+        if tool.timeout_seconds is not None:
+            attributes[
+                "aegisops.tool.timeout_seconds"
+            ] = tool.timeout_seconds
+
+        with OpenTelemetryObservation(
+            runtime=self._otel_runtime,
+            sink=self._telemetry_sink,
+            name=f"execute_tool {tool.name}",
+            kind=SpanKind.TOOL,
+            incident_id=str(incident.id),
+            action_id=str(action.id),
+            agent_name=action.agent,
+            attributes=attributes,
+        ) as observation:
+            try:
+                result = await self._execute_registered_tool(
+                    incident=incident,
+                    action=action,
+                    tool=tool,
+                )
+
+            except ToolExecutionError as exc:
+                observation.set_attribute(
+                    "aegisops.tool.outcome",
+                    "error",
+                )
+
+                observation.set_attribute(
+                    "aegisops.tool.circuit_state.after",
+                    self.circuit_state(
+                        tool.name
+                    ),
+                )
+
+                observation.set_attribute(
+                    "error.type",
+                    self._error_type(
+                        exc
+                    ),
+                )
+
+                raise
+
+            observation.set_attribute(
+                "aegisops.tool.outcome",
+                "success",
+            )
+
+            observation.set_attribute(
+                "aegisops.tool.circuit_state.after",
+                self.circuit_state(
+                    tool.name
+                ),
+            )
+
+            return result
+
+    async def _execute_registered_tool(
+        self,
+        *,
+        incident: IncidentState,
+        action: ProposedAction,
+        tool: RegisteredTool,
+    ) -> object:
+        """Execute an already-authorized tool with resilience controls."""
+
         try:
             result = await tool.executor.execute(
                 lambda: self._invoke_with_timeout(
@@ -326,7 +477,9 @@ class ToolRuntime:
             payload={
                 "incident_id": str(incident.id),
                 "tool_name": tool.name,
-                "arguments": action.tool_arguments,
+                "argument_keys": sorted(
+                    action.tool_arguments
+                ),
                 "idempotent": tool.idempotent,
                 "timeout_seconds": tool.timeout_seconds,
                 "circuit_state": self.circuit_state(
@@ -410,3 +563,26 @@ class ToolRuntime:
         """Normalize tool identity for registry and policy lookups."""
 
         return name.strip().casefold()
+
+    @staticmethod
+    def _error_type(
+        error: ToolExecutionError,
+    ) -> str:
+        """Return a low-cardinality root error classification."""
+
+        cause = error.__cause__
+
+        if cause is None:
+            return type(
+                error
+            ).__name__
+
+        if isinstance(
+            cause,
+            TimeoutError,
+        ):
+            return "timeout"
+
+        return type(
+            cause
+        ).__name__
