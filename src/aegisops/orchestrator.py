@@ -1,4 +1,4 @@
-"""Incident-level workflow orchestration for the AegisOps control plane."""
+"""Durable incident workflow orchestration for the AegisOps control plane."""
 
 from __future__ import annotations
 
@@ -8,6 +8,10 @@ from uuid import UUID
 
 from aegisops.approval import ApprovalManager
 from aegisops.audit import AuditEventType, AuditLedger
+from aegisops.checkpoint import (
+    CheckpointConflictError,
+    SQLiteCheckpointStore,
+)
 from aegisops.domain import (
     IncidentState,
     ProposedAction,
@@ -70,7 +74,7 @@ class _NoOpTelemetrySink:
 
 
 class IncidentOrchestrator:
-    """Coordinate policy, approval, execution, audit, and tracing."""
+    """Coordinate policy, approvals, execution, persistence, and tracing."""
 
     WORKFLOW_NAME = "incident-response"
 
@@ -81,6 +85,7 @@ class IncidentOrchestrator:
         approval_manager: ApprovalManager,
         tool_runtime: ToolRuntime,
         audit_ledger: AuditLedger,
+        checkpoint_store: SQLiteCheckpointStore | None = None,
         otel_runtime: OpenTelemetryRuntime | None = None,
         telemetry_sink: TelemetrySink | None = None,
     ) -> None:
@@ -88,6 +93,13 @@ class IncidentOrchestrator:
         self._approval_manager = approval_manager
         self._tool_runtime = tool_runtime
         self._audit_ledger = audit_ledger
+
+        self._checkpoint_store = checkpoint_store
+
+        self._checkpoint_versions: dict[
+            UUID,
+            int,
+        ] = {}
 
         self._otel_runtime = otel_runtime
 
@@ -107,6 +119,71 @@ class IncidentOrchestrator:
                 if telemetry_sink is not None
                 else _NoOpTelemetrySink()
             )
+
+    def restore_incident(
+        self,
+        incident_id: UUID | str,
+    ) -> IncidentState:
+        """Restore authoritative incident state from durable storage.
+
+        The restored checkpoint version is retained locally so all
+        subsequent writes use optimistic concurrency control.
+        """
+
+        if self._checkpoint_store is None:
+            raise RuntimeError(
+                "No checkpoint store is configured."
+            )
+
+        snapshot = self._checkpoint_store.load_latest(
+            incident_id
+        )
+
+        self._checkpoint_versions[
+            snapshot.incident_id
+        ] = snapshot.version
+
+        incident = snapshot.state.model_copy(
+            deep=True
+        )
+
+        self._audit_ledger.append(
+            event_type=AuditEventType.INCIDENT_STATE_CHANGED,
+            actor="aegisops-checkpoint-store",
+            subject_id=str(
+                incident.id
+            ),
+            payload={
+                "event": "checkpoint_restored",
+                "checkpoint_version": snapshot.version,
+                "incident_status": incident.status.value,
+            },
+        )
+
+        return incident
+
+    def checkpoint_version(
+        self,
+        incident_id: UUID | str,
+    ) -> int | None:
+        """Return the orchestrator's tracked durable version."""
+
+        normalized_id = (
+            incident_id
+            if isinstance(
+                incident_id,
+                UUID,
+            )
+            else UUID(
+                str(
+                    incident_id
+                )
+            )
+        )
+
+        return self._checkpoint_versions.get(
+            normalized_id
+        )
 
     async def submit_action(
         self,
@@ -135,6 +212,7 @@ class IncidentOrchestrator:
             self._annotate_result(
                 observation=observation,
                 result=result,
+                incident=incident,
             )
 
             return result
@@ -172,6 +250,7 @@ class IncidentOrchestrator:
             self._annotate_result(
                 observation=observation,
                 result=result,
+                incident=incident,
             )
 
             return result
@@ -209,6 +288,7 @@ class IncidentOrchestrator:
             self._annotate_result(
                 observation=observation,
                 result=result,
+                incident=incident,
             )
 
             return result
@@ -219,11 +299,16 @@ class IncidentOrchestrator:
         incident: IncidentState,
         action: ProposedAction,
     ) -> OrchestrationResult:
-        """Execute the submit path without creating another workflow span."""
+        """Execute the submit path without another workflow span."""
 
         self._register_action(
             incident=incident,
             action=action,
+        )
+
+        self._persist_checkpoint(
+            incident=incident,
+            reason="action_registered",
         )
 
         policy_decision = self._policy_engine.evaluate(
@@ -279,7 +364,7 @@ class IncidentOrchestrator:
         approver: str,
         reason: str | None,
     ) -> OrchestrationResult:
-        """Apply approval and resume without creating another span."""
+        """Persist approval before allowing its side effect."""
 
         action = self._get_action(
             incident=incident,
@@ -299,10 +384,16 @@ class IncidentOrchestrator:
             reason=reason,
         )
 
+        self._persist_checkpoint(
+            incident=incident,
+            reason="approval_recorded",
+        )
+
         return await self._attempt_execution(
             incident=incident,
             action=action,
             policy_decision=policy_decision,
+            checkpoint_before_execution=False,
         )
 
     def _reject_action(
@@ -313,7 +404,7 @@ class IncidentOrchestrator:
         approver: str,
         reason: str,
     ) -> OrchestrationResult:
-        """Apply rejection without creating another workflow span."""
+        """Persist rejection before returning control."""
 
         action = self._get_action(
             incident=incident,
@@ -333,6 +424,11 @@ class IncidentOrchestrator:
             reason=reason,
         )
 
+        self._persist_checkpoint(
+            incident=incident,
+            reason="rejection_recorded",
+        )
+
         return OrchestrationResult(
             action_id=action.id,
             status=OrchestrationStatus.REJECTED,
@@ -347,7 +443,7 @@ class IncidentOrchestrator:
         action: ProposedAction,
         policy_decision: PolicyDecision,
     ) -> OrchestrationResult:
-        """Pass through the runtime so the pause is audited."""
+        """Pass through runtime so policy pause remains audited."""
 
         try:
             await self._tool_runtime.execute(
@@ -380,8 +476,15 @@ class IncidentOrchestrator:
         incident: IncidentState,
         action: ProposedAction,
         policy_decision: PolicyDecision,
+        checkpoint_before_execution: bool = True,
     ) -> OrchestrationResult:
         """Execute an authorized action through the controlled runtime."""
+
+        if checkpoint_before_execution:
+            self._persist_checkpoint(
+                incident=incident,
+                reason="before_tool_execution",
+            )
 
         try:
             result = await self._tool_runtime.execute(
@@ -461,6 +564,69 @@ class IncidentOrchestrator:
             f"incident {incident.id}."
         )
 
+    def _persist_checkpoint(
+        self,
+        *,
+        incident: IncidentState,
+        reason: str,
+    ) -> int | None:
+        """Persist authoritative state with compare-and-swap semantics.
+
+        A process must explicitly restore an existing incident before
+        updating it. This prevents a fresh or stale process from
+        silently overwriting durable state owned by another worker.
+        """
+
+        if self._checkpoint_store is None:
+            return None
+
+        expected_version = self._checkpoint_versions.get(
+            incident.id
+        )
+
+        if expected_version is None:
+            current_version = (
+                self._checkpoint_store.current_version(
+                    incident.id
+                )
+            )
+
+            if current_version != 0:
+                raise CheckpointConflictError(
+                    "Incident already has durable state. "
+                    "Restore it with restore_incident() before "
+                    f"continuing: incident={incident.id}, "
+                    f"stored_version={current_version}."
+                )
+
+            expected_version = 0
+
+        snapshot = self._checkpoint_store.save(
+            incident,
+            expected_version=expected_version,
+        )
+
+        self._checkpoint_versions[
+            incident.id
+        ] = snapshot.version
+
+        self._audit_ledger.append(
+            event_type=AuditEventType.INCIDENT_STATE_CHANGED,
+            actor="aegisops-checkpoint-store",
+            subject_id=str(
+                incident.id
+            ),
+            payload={
+                "event": "checkpoint_saved",
+                "checkpoint_version": snapshot.version,
+                "previous_version": expected_version,
+                "reason": reason,
+                "incident_status": incident.status.value,
+            },
+        )
+
+        return snapshot.version
+
     def _record_orchestration_failure(
         self,
         *,
@@ -505,6 +671,31 @@ class IncidentOrchestrator:
         assert self._otel_runtime is not None
         assert self._telemetry_sink is not None
 
+        attributes: dict[str, object] = {
+            "gen_ai.operation.name": "invoke_workflow",
+            "gen_ai.workflow.name": self.WORKFLOW_NAME,
+            "aegisops.workflow.phase": phase,
+            "aegisops.environment": incident.environment,
+            "aegisops.service": incident.service,
+            "aegisops.incident.severity": (
+                incident.severity.value
+            ),
+            "aegisops.checkpoint.enabled": (
+                self._checkpoint_store is not None
+            ),
+        }
+
+        checkpoint_version = (
+            self._checkpoint_versions.get(
+                incident.id
+            )
+        )
+
+        if checkpoint_version is not None:
+            attributes[
+                "aegisops.checkpoint.version"
+            ] = checkpoint_version
+
         return OpenTelemetryObservation(
             runtime=self._otel_runtime,
             sink=self._telemetry_sink,
@@ -515,31 +706,15 @@ class IncidentOrchestrator:
             kind=SpanKind.INTERNAL,
             incident_id=str(incident.id),
             action_id=str(action_id),
-            attributes={
-                "gen_ai.operation.name": (
-                    "invoke_workflow"
-                ),
-                "gen_ai.workflow.name": (
-                    self.WORKFLOW_NAME
-                ),
-                "aegisops.workflow.phase": phase,
-                "aegisops.environment": (
-                    incident.environment
-                ),
-                "aegisops.service": (
-                    incident.service
-                ),
-                "aegisops.incident.severity": (
-                    incident.severity.value
-                ),
-            },
+            attributes=attributes,
         )
 
-    @staticmethod
     def _annotate_result(
+        self,
         *,
         observation: OpenTelemetryObservation,
         result: OrchestrationResult,
+        incident: IncidentState,
     ) -> None:
         """Attach low-cardinality workflow outcome metadata."""
 
@@ -566,6 +741,18 @@ class IncidentOrchestrator:
                 in result.policy_decision.reasons
             ],
         )
+
+        checkpoint_version = (
+            self._checkpoint_versions.get(
+                incident.id
+            )
+        )
+
+        if checkpoint_version is not None:
+            observation.set_attribute(
+                "aegisops.checkpoint.version",
+                checkpoint_version,
+            )
 
         if result.status is OrchestrationStatus.FAILED:
             observation.set_attribute(
