@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeVar
 
-
-
 T = TypeVar("T")
 
 
@@ -105,10 +103,7 @@ class RetryPolicy:
             * self.jitter_ratio
         )
 
-        return max(
-            0.0,
-            bounded_delay * jitter_multiplier,
-        )
+        return float(max(0.0, bounded_delay * jitter_multiplier))
 
 
 class CircuitBreaker:
