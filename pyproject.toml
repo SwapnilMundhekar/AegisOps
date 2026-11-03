@@ -61,6 +61,7 @@ select = [
 ]
 
 [tool.mypy]
+explicit_package_bases = true
 python_version = "3.11"
 strict = true
 mypy_path = "src"
