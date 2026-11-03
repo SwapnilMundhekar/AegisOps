@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 authors = [
     { name = "Swapnil Mundhekar" }
 ]
-
 dependencies = [
     "openai-agents",
     "langgraph",
@@ -36,7 +35,8 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
-    "pre-commit"
+    "pre-commit",
+    "types-jsonschema>=4.25,<5"
 ]
 
 [tool.setuptools.packages.find]
@@ -63,6 +63,7 @@ select = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
+mypy_path = "src"
 warn_unused_configs = true
 show_error_codes = true
 
