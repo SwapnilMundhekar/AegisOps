@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import TracebackType
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 class SpanKind(StrEnum):
@@ -386,7 +386,7 @@ class Observation:
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
-    ) -> bool:
+    ) -> Literal[False]:
         ended_ns = time.perf_counter_ns()
 
         if exc_value is not None:
