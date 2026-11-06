@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Mapping
+from typing import Literal
 
 from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
@@ -20,14 +21,18 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.trace import (
     NonRecordingSpan,
     Span,
-    SpanContext as OTelSpanContext,
-    SpanKind as OTelSpanKind,
     Status,
     StatusCode,
     TraceFlags,
-    TraceState,
     Tracer,
+    TraceState,
     set_span_in_context,
+)
+from opentelemetry.trace import (
+    SpanContext as OTelSpanContext,
+)
+from opentelemetry.trace import (
+    SpanKind as OTelSpanKind,
 )
 
 from aegisops.observability import (
@@ -39,7 +44,6 @@ from aegisops.observability import (
     TraceContext,
     current_context,
 )
-
 
 OTelAttributeValue = str | bool | int | float
 
@@ -105,20 +109,9 @@ def create_otel_runtime(
     )
 
     if exporter is None:
-        exporter_arguments: dict[str, object] = {}
-
-        if endpoint is not None:
-            exporter_arguments[
-                "endpoint"
-            ] = endpoint
-
-        if headers is not None:
-            exporter_arguments[
-                "headers"
-            ] = dict(headers)
-
         exporter = OTLPSpanExporter(
-            **exporter_arguments,
+            endpoint=endpoint,
+            headers=dict(headers) if headers is not None else None,
         )
 
     processor = BatchSpanProcessor(
@@ -257,7 +250,7 @@ class OpenTelemetryObservation:
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
-    ) -> bool:
+    ) -> Literal[False]:
         if (
             self._otel_span is None
             or self._observation is None
