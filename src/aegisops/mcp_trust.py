@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from jsonschema import (
     Draft202012Validator,
@@ -13,6 +13,8 @@ from jsonschema import (
 )
 from jsonschema.exceptions import (
     SchemaError,
+)
+from jsonschema.exceptions import (
     ValidationError as JSONSchemaValidationError,
 )
 from mcp import MCPError
@@ -27,7 +29,6 @@ from mcp.types import (
 from pydantic import ValidationError as PydanticValidationError
 
 from aegisops.observability import current_context
-
 
 JSONValue = (
     None
@@ -1052,7 +1053,10 @@ class MCPTrustGateway:
         These fields add AegisOps business correlation only.
         """
 
-        meta: RequestParamsMeta = {
+        # MCP request _meta is an extensible map on the wire. The
+        # installed SDK's TypedDict enumerates only known protocol keys,
+        # so build our business correlation keys before the typed boundary.
+        meta: dict[str, str] = {
             "aegisops.server_id": server_id,
             "aegisops.tool_name": tool_name,
             "aegisops.trust_boundary": "external_mcp",
@@ -1060,22 +1064,14 @@ class MCPTrustGateway:
 
         context = current_context()
 
-        if context is None:
-            return meta
+        if context is not None:
+            if context.incident_id is not None:
+                meta["aegisops.incident_id"] = context.incident_id
 
-        if context.incident_id is not None:
-            meta[
-                "aegisops.incident_id"
-            ] = context.incident_id
+            if context.action_id is not None:
+                meta["aegisops.action_id"] = context.action_id
 
-        if context.action_id is not None:
-            meta[
-                "aegisops.action_id"
-            ] = context.action_id
+            if context.agent_name is not None:
+                meta["aegisops.agent_name"] = context.agent_name
 
-        if context.agent_name is not None:
-            meta[
-                "aegisops.agent_name"
-            ] = context.agent_name
-
-        return meta
+        return cast(RequestParamsMeta, meta)
