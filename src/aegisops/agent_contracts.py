@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aegisops.domain import ActionType
 
-
 _AGENT_NAME_PATTERN = r"^[a-z][a-z0-9._-]{0,63}$"
 _FINDING_CODE_PATTERN = r"^[A-Z][A-Z0-9_]{1,63}$"
 _ERROR_CODE_PATTERN = r"^[A-Z][A-Z0-9_]{1,63}$"
@@ -88,7 +87,7 @@ class EvidenceItem(AgentContract):
     )
 
     @model_validator(mode="after")
-    def validate_evidence(self) -> "EvidenceItem":
+    def validate_evidence(self) -> EvidenceItem:
         if self.reference is not None and not self.reference.strip():
             raise ValueError("reference must not be blank when supplied.")
 
@@ -122,7 +121,7 @@ class AgentSpec(AgentContract):
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
 
     @model_validator(mode="after")
-    def validate_permissions(self) -> "AgentSpec":
+    def validate_permissions(self) -> AgentSpec:
         can_propose = (
             AgentCapability.PROPOSE_ACTION in self.capabilities
         )
@@ -140,7 +139,7 @@ class AgentSpec(AgentContract):
 
         return self
 
-    def validate_task(self, task: "AgentTask") -> None:
+    def validate_task(self, task: AgentTask) -> None:
         """Reject tasks exceeding this agent's declared permissions."""
 
         if task.target_agent != self.name:
@@ -187,8 +186,8 @@ class AgentSpec(AgentContract):
 
     def validate_result(
         self,
-        task: "AgentTask",
-        result: "AgentResult",
+        task: AgentTask,
+        result: AgentResult,
     ) -> None:
         """Validate agent identity, task correlation and action proposals."""
 
@@ -247,7 +246,7 @@ class AgentTask(AgentContract):
     correlation_id: UUID | None = None
 
     @model_validator(mode="after")
-    def validate_task_content(self) -> "AgentTask":
+    def validate_task_content(self) -> AgentTask:
         if any(not key.strip() for key in self.context):
             raise ValueError("Context keys must not be blank.")
 
@@ -316,7 +315,7 @@ class AgentResult(AgentContract):
     )
 
     @model_validator(mode="after")
-    def validate_result_state(self) -> "AgentResult":
+    def validate_result_state(self) -> AgentResult:
         if self.status is AgentRunStatus.HANDOFF and not self.handoff_to:
             raise ValueError(
                 "HANDOFF results must specify handoff_to."
@@ -384,7 +383,7 @@ class SupervisorRoute(AgentContract):
     max_steps: int = Field(default=10, ge=1, le=100)
 
     @model_validator(mode="after")
-    def validate_route(self) -> "SupervisorRoute":
+    def validate_route(self) -> SupervisorRoute:
         if self.requested_action_types and (
             AgentCapability.PROPOSE_ACTION not in self.required_capabilities
         ):
