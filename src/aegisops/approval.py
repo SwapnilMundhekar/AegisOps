@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from uuid import UUID
 
 from aegisops.audit import AuditEventType, AuditLedger
@@ -20,7 +20,7 @@ from aegisops.policy import (
 
 def utc_now() -> datetime:
     """Return the current timezone-aware UTC timestamp."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class ApprovalError(RuntimeError):
