@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 def utc_now() -> datetime:
     """Return the current timezone-aware UTC timestamp."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class AuditEventType(StrEnum):
