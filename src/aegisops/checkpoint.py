@@ -6,16 +6,17 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from aegisops.domain import IncidentState
+import contextlib
 
 
 def utc_now() -> datetime:
     """Return the current timezone-aware UTC timestamp."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class CheckpointError(RuntimeError):
@@ -132,10 +133,8 @@ class SQLiteCheckpointStore:
             raise
 
         except Exception:
-            try:
+            with contextlib.suppress(sqlite3.Error):
                 connection.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
 
             raise
 
